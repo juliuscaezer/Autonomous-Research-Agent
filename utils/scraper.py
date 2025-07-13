@@ -1,55 +1,39 @@
-from newspaper import Article
+# utils/scraper.py
+import logging
 from googlesearch import search
-import requests
-from bs4 import BeautifulSoup
+import newspaper
+from newspaper.article import ArticleException
+from playwright.async_api import async_playwright
 
-def get_urls_for_topic(topic, num_results=5):
-    """
-    Uses Google search to find relevant article URLs for a given topic.
-    """
+logging.basicConfig(level=logging.INFO)
+
+def get_urls_for_topic(topic: str, num_results: int = 20):
     try:
         return list(search(topic, num_results=num_results))
     except Exception as e:
-        print(f"[get_urls_for_topic] Error during search: {e}")
+        logging.error(f"[search] {e}")
         return []
 
-def scrape_article(url):
-    # First try with newspaper3k
+async def scrape_article(url: str) -> str:
+    """Async: Newspaper first, Playwright fallback."""
     try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        text = article.text.strip()
-        if len(text.split()) > 100:
-            return text
-    except Exception as e:
-        print(f"[scrape_article] Newspaper failed: {e}")
+        art = newspaper.Article(url)
+        art.download(); art.parse()
+        if art.text.strip():
+            return art.text.strip()
+    except ArticleException as e:
+        logging.warning(f"[Newspaper] {e}")
 
-    # Fallback: requests + BeautifulSoup with better headers
+    # Playwright fallback
     try:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code != 200:
-            print(f"[scrape_article] Fallback HTTP status: {response.status_code}")
-            return ""
-
-        soup = BeautifulSoup(response.content, 'html.parser')
-        for tag in soup(['script', 'style', 'header', 'footer', 'nav', 'form']):
-            tag.decompose()
-
-        text = ' '.join(soup.stripped_strings)
-        if len(text.split()) > 100:
-            return text
-        else:
-            print(f"[scrape_article] Fallback extracted insufficient content.")
-            return ""
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(url, timeout=15000)
+            await page.wait_for_load_state("networkidle")
+            text = await page.inner_text("body")
+            await browser.close()
+            return text if len(text.split()) > 100 else ""
     except Exception as e:
-        print(f"[scrape_article] BeautifulSoup fallback failed: {e}")
+        logging.error(f"[Playwright] {e}")
         return ""
